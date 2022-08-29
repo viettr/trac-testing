@@ -1,0 +1,399 @@
+---
+title: "Troubleshooting trac for deep sea"
+author: "Sarah Hu"
+date: "8/29/2022"
+
+output: 
+  html_document:
+    number_sections: true
+    theme: spacelab
+    highlight: monochrome
+    collapsed: false
+    toc: true
+    toc_depth: 4
+    toc_float: true
+
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# trac install & enable
+
+Complete below steps in this order!
+```{r}
+# install.packages("r-reticulate", force = TRUE)
+library(reticulate)
+use_python("~/anaconda3/envs/r_4.1/bin/python", required = TRUE)
+library(trac)
+```
+
+Additional libraries
+```{r}
+library(tidyverse); library(phyloseq)
+```
+
+
+# trac vignette & notes
+
+https://jacobbien.github.io/trac/articles/trac-example.html
+
+vignette code
+goal: predict some response variable based on amplicon data
+
+* response vector (y) of length (n). n = number of samples
+
+* n by p data matrix = x. p = number of leaves (ASVs)
+
+* binary matrix A, with p rows
+
+## sCD14
+```{r}
+names(sCD14)
+# ?sCD14
+class(sCD14$y) #numeric
+class(sCD14$x) # Matrix #array
+class(sCD14$tree) #phylo  
+class(sCD14$tax) # dataframe
+class(sCD14$A) #dgCMatrix
+# head(sCD14$tax) # OTU IDs as row names, each taxonomic level needs to add to previous
+
+```
+
+Splits data into a train a test set. Takes 2/3rd of the observations for training.
+```{r}
+set.seed(123)
+ntot <- length(sCD14$y) # total number of samples
+# ntot
+n <- round(2/3 * ntot)  # n == 2/3 of the total for training
+tr <- sample(ntot, n) #sample the total number for training == tr
+# tr
+```
+
+take the log of the feature matrix (always perform this step? normalization or somekind?)
+```{r}
+# Function to do log pseudo
+log_pseudo <- function(x, pseudo_count = 1) log(x + pseudo_count)
+
+# y == n vector response
+ytr <- sCD14$y[tr] #training #separate training ## response vector
+yte <- sCD14$y[-tr] #test #separate test dataseet y
+
+# z == n by p matrix with log(X)
+ztr <- log_pseudo(sCD14$x[tr, ]) # do pseudo count function on matrix of OTUs for training
+zte <- log_pseudo(sCD14$x[-tr, ]) #repeat for test dataset
+dim(ztr) # full training data set?
+dim(zte) # test dataset
+```
+
+
+```{r}
+# ?trac()
+fit <- trac(ztr, ytr, A = sCD14$A, min_frac = 1e-2, nlam = 30)
+# ?fit() # estimate model parameters
+# class(fit)
+class(sCD14$tree)
+```
+
+Trac outputs:
+```{r}
+# trac regularization path
+plot_trac_path(fit) #default will show alpha coefficients
+# str(fit)
+```
+
+This plot, alpha vs. lambda, shows the solution path. Each line is a taxa, where the path of its "alpha coefficient" as a product of the tuning parameter increases (left to right). 
+x-axis of these plots represent the tuning parameter 
+
+
+What is meant by "early on in the path?"
+fit == a list that is representative of the path. So the nonzero function below, takes the first non-zero alpha∂
+
+```{r}
+show_nonzeros <- function(x) x[x != 0]
+show_nonzeros(fit[[1]]$alpha[, 2])
+```
+
+Repeat with beta values, these are coefficients that correspond to the leaf taxa
+```{r}
+plot_trac_path(fit, coef = "beta")
+```
+Define leaf taxa (beta) vs. nodes of the tree (alpha)?
+
+For beta plot, as tuning parameter (amount of regularization increases), the beta coefficients (y-axis) fuse together - this is the aggregation of taxa via trac regularizer.
+
+Therefore, we need to cross validate to choose the most appropriate tuning parameter
+
+```{r}
+# ?cv_trac
+cvfit <- cv_trac(fit, Z = ztr, y = ytr, A = sCD14$A)
+# default is 5-fold cross validation
+```
+
+```{r}
+plot_cv_trac(cvfit)
+```
+This plot shows the minimum mean squared error and one standard-error rule. Where the vertical lines are the aggregations that are selected as part of the cross-validation.
+- on the left (should be dashed??) is the 1SE rule
+- on the right (should be dotted) is the CV best
+
+What is the value of the vertical lines?
+```{r}
+cvfit$cv[[1]]$ibest #20
+cvfit$cv[[1]]$i1se #8
+```
+What are the taxa using the 1SE rule with respect to the nonzero alpha coefficients?
+Structure of 'fit'?
+```{r}
+show_nonzeros(fit[[1]]$alpha[, cvfit$cv[[1]]$i1se])
+```
+
+Predictions
+```{r}
+# ?predict_trac
+yhat_te <- predict_trac(fit, new_Z = zte)
+testerr <- colMeans((yhat_te[[1]] - yte)^2)
+nnz <- colSums(fit[[1]]$alpha != 0)
+class(nnz)
+# Numeric output where I've made a predction on the test set. And then computed the mean squared error ont he test set.
+```
+```{r}
+
+tibble(nnz = nnz, testerr = testerr) %>%
+  ggplot(aes(x = nnz, y = testerr)) +
+  geom_point() +
+  geom_vline(xintercept = nnz[cvfit$cv[[1]]$i1se]) + # or 5?
+  geom_vline(xintercept = nnz[cvfit$cv[[1]]$ibest]) # 23
+```
+Test prediction along the y-axis and inferred aggregations at x-axis.
+Do not understand the vertical line here?
+
+trac = 1/2
+```{r}
+fit2 <- trac(ztr, ytr, A = sCD14$A, min_frac = 1e-2,
+             nlam = 30, w = Matrix::colSums(sCD14$A)^0.5)
+```
+
+Are the other 2 examples, the aggregating and the sparse log-contrast just other options?
+
+What else is a good way to interpret Figure 2E. But also write about Figure 2E? And Isolate the alpha coefficient?
+
+# Apply to deep-sea vent data
+Data originates from Mid-Cayman Rise (MCR).
+
+Input data includes raw input but also phyloseq objects.
+```{r}
+load("input-data/MCR-amplicon-data.RData", verbose = TRUE)
+```
+## Isolate MCR samples for what environmental parameters are non-NAs
+
+> What can I do with NAs? any other ideas? such patchy data... I can expand the dataset, but my core questions rely on the samples in this example.
+
+```{r}
+# class(samplenames)
+
+keep <- data.frame(samplenames) %>% 
+  rownames_to_column(var = "SEQ_NAME") %>% 
+  filter(!(SAMPLETYPE == "Incubation")) %>% 
+  select(SEQ_NAME)
+
+keep_samples <- as.character(keep$SEQ_NAME)
+
+mcr_temp_keep <- prune_samples(keep_samples, physeq_mcr)
+# sample_data(mcr_temp_keep)$TEMP
+# Right now, temperature data is all I have for every single sample.
+
+# mcr_temp_keep
+```
+
+# Function to generate trac inputs
+See trac code for paper - https://github.com/jacobbien/trac-reproducible
+
+
+
+
+Function for creating trac inputs
+
+
+__Note that the "long" input doesn't currently work! Will fix shortly.__
+
+
+```{r}
+# Function to take phyloseq object and isolate needed inputs for trac
+
+#Should be familiar with input phyloseq taxonomic names. In cases where there are Unassigned or Unclassified, change to NAs
+
+make_trac_input <- function(phyloseq_in, env_param, tax_short_description, tax_long_description){
+  out <- genefilter_sample(
+              phyloseq_in, 
+              filterfun_sample(function(x) x >= 1),
+              A = 0.1 * nsamples(phyloseq_in))
+  filtered <- prune_taxa(out, phyloseq_in)
+  # Extract taxa data
+  taxa <- filtered@tax_table@.Data
+  total_col <- ncol(taxa)
+  # Replace NAs with short version unassigned with level
+  # blank_nas <- paste0(short, "__") # for troubleshooting
+  blank_nas <- paste0(tax_short_description, "__")
+  for (i in 1:total_col) taxa[is.na(taxa[, i]), i] <- blank_nas[i]
+  #
+  taxa <- cbind(taxa, rownames(taxa))
+  otu_col <- total_col + 1
+  colnames(taxa)[otu_col] <- "OTU"
+  # make it so labels are unique
+  for (i in seq(1, total_col)) {
+    # add a number when the type is unknown... e.g. "g__"
+    ii <- nchar(taxa[, i]) == 3
+    if (sum(ii) > 0)
+      taxa[ii, i] <- paste0(taxa[ii, i], 1:sum(ii))
+  }
+  taxa <- as.data.frame(taxa) %>% 
+    add_column(Rank0 = "Life") %>% 
+    select(Rank0, everything())
+  #
+  for (i in 2:ncol(taxa)) {
+    taxa[, i] <- paste(taxa[, i-1], taxa[, i], sep = "::")
+    }
+  # convert all columns from character to factors for tax_table_to_phylo
+  for (i in seq_along(taxa)) taxa[, i] <- factor(taxa[, i])
+  #
+  # Below command requires work
+  tree_out <- tax_table_to_phylo(~Rank0/Domain/Supergroup/Phylum/Class/Order/Family/Genus/Species/OTU, data = taxa, collapse = TRUE)
+  ## TO DO figure out how to provide argument in tax_table_to_phylo()
+  # tree_out <- tax_table_to_phylo(noquote(long), data = taxa, collapse = TRUE)
+  # tree_out <- tax_table_to_phylo(paste0("~Rank0", tax_long_description), data = taxa, collapse = TRUE)
+  # Generate A matrix
+  A_out <- phylo_to_A(tree_out)
+  # y_out <- (sample_data(filtered)$col_select)
+  # y_out_num <- as.numeric(levels(y_out))[y_out]
+  y_out <- as.factor(sample_data(filtered)$env_param)
+  yy_out <- as.numeric(levels(y_out))[y_out]
+  # rm_na <- which(is.na(y_out_num)) # Option to include an NA removal step
+  data_input <- list(y = yy_out,
+                     x = t(filtered@otu_table@.Data),
+                     tree = tree_out,
+                     tax = taxa,
+                     A = A_out)
+  return(data_input)
+}
+
+```
+
+Parameters for function ```make_trac_input(phyloseq_in, env_param, tax_short_description, tax_long_description)```
+
+* phyloseq_in = phyloseq object
+
+* env_param = column name of environmental parameter
+
+* tax_short_description = single letter list of taxonomic levels
+
+* tax_long_description = _pending_ slash separated taxonomic levels in the same order as short
+
+Examples of short and long
+```{r}
+#tax_long_description
+long <- c("~Rank0/Domain/Supergroup/Phylum/Class/Order/Family/Genus/Species/OTU")
+
+#tax_short_description
+short <- c("d", "s", "p", "c", "o", "f", "g", "s")
+```
+
+Application to my own data
+```{r}
+# Use mcr_temp_keep, because we know TEMP doesn't have any NAs
+trac_mcr <- make_trac_input(mcr_temp_keep, TEMP, short, long)
+```
+
+Check
+```{r}
+# trac_mcr$y # incorrect output?!?!
+y <- as.factor(sample_data(mcr_temp_keep)$TEMP)
+yy <- as.numeric(levels(y))[y]
+yy
+
+class(trac_mcr) # list, check all outputs below
+class(trac_mcr$y) # use yy instead
+# trac_mcr$y # why is output numeric(0)??
+# class(trac_mcr$x)
+class(trac_mcr$tree)
+class(trac_mcr$tax)
+class(trac_mcr$A)
+class(trac_mcr$y)
+```
+
+Apply vignette to temp and OTU data from MCR.
+```{r}
+set.seed(123)
+
+# use yy instead of trac_mcr$y
+
+ntot <- length(yy)
+ntot
+n <- round(2/3 * ntot)
+n
+tr <- sample(ntot, n)
+
+# log of feature matrix
+log_pseudo <- function(x, pseudo_count = 1) log(x + pseudo_count)
+# ytr <- trac_mcr$y[tr]
+# yte <- trac_mcr$y[-tr]
+ytr <- yy[tr]
+yte <- yy[-tr]
+ztr <- log_pseudo(trac_mcr$x[tr, ])
+zte <- log_pseudo(trac_mcr$x[-tr, ])
+zmcr <- log_pseudo(trac_mcr$x)
+dim(ztr); dim(zte)
+
+fit <- trac(ztr, ytr, A = trac_mcr$A, min_frac = 1e-2, nlam = 30)
+
+fit_mcr <- trac(zmcr, yy, A = trac_mcr$A, min_frac = 1e-2, nlam = 30)
+```
+
+## trac output with MCR data
+```{r}
+plot_trac_path(fit)
+plot_trac_path(fit_mcr)
+```
+```{r}
+show_nonzeros <- function(x) x[x != 0]
+
+show_nonzeros(fit[[1]]$alpha[, 2])
+
+
+show_nonzeros(fit_mcr[[1]]$alpha[, 2])
+```
+
+```{r}
+plot_trac_path(fit, coef = "beta")
+
+plot_trac_path(fit_mcr, coef = "beta")
+```
+
+```{r}
+cvfit <- cv_trac(fit, Z = ztr, y = ytr, A = trac_mcr$A)
+plot_cv_trac(cvfit)
+
+cvfit_mcr <- cv_trac(fit_mcr, Z = ztr, y = ytr, A = trac_mcr$A)
+plot_cv_trac(cvfit_mcr)
+```
+```{r}
+cvfit$cv[[1]]$ibest
+cvfit$cv[[1]]$i1se
+# 3, 1
+```
+
+```{r}
+# show_nonzeros(fit[[1]]$alpha[, cvfit$cv[[1]]$i1se])
+```
+
+# Session
+```{r}
+sessionInfo()
+```
+
