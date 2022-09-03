@@ -30,7 +30,7 @@ Complete below steps in this order!
 ```{r}
 # install.packages("r-reticulate", force = TRUE)
 library(reticulate)
-use_python("~/anaconda3/envs/r_4.1/bin/python", required = TRUE)
+# use_python("~/anaconda3/envs/r_4.1/bin/python", required = TRUE)
 library(trac)
 ```
 
@@ -173,6 +173,7 @@ tibble(nnz = nnz, testerr = testerr) %>%
 ```
 Test prediction along the y-axis and inferred aggregations at x-axis.
 Do not understand the vertical line here?
+(Vertical line indicate for 1-se we have 4 selected components with around 6e+06 MSE error in out of sample prediction. the i1se indicates the index with 1se away from minimum, so passing `nzz[...$i1se]` is correct. My interpretation of this plot is that we do not overfit based on the 1-se and ibest selection since the out of sample error is the lowest between i1se and ibest. We have a baseline error with almost zero non-zero components (intercept model) with decreasing out of sample error. The out of sample error increses with more than 18 selected components indicating that we overfit from this point on by e.g. selecting a lot of noise variables.. We are not allowed to do the hyperparamter selection based on this plot otherwise it would not be an out of sample set,)
 
 trac = 1/2
 ```{r}
@@ -181,9 +182,9 @@ fit2 <- trac(ztr, ytr, A = sCD14$A, min_frac = 1e-2,
 ```
 
 Are the other 2 examples, the aggregating and the sparse log-contrast just other options?
-
+(The sparse log-contrast model is without aggregating it is only possible to do the regression analysis on one pre-specified taxonomic level. The other aggregation example of trac shows that we can nudge the penality to select on a higher or a lower level of the taxonomic tree. Here the `w` with `a = 0.5` favors selection near the otu level.)
 What else is a good way to interpret Figure 2E. But also write about Figure 2E? And Isolate the alpha coefficient?
-
+(Based on the selected components we can form explicit log-ratios that have a influence on the output.)
 # Apply to deep-sea vent data
 Data originates from Mid-Cayman Rise (MCR).
 
@@ -264,7 +265,8 @@ make_trac_input <- function(phyloseq_in, env_param, tax_short_description, tax_l
   for (i in seq_along(taxa)) taxa[, i] <- factor(taxa[, i])
   #
   # Below command requires work
-  tree_out <- tax_table_to_phylo(~Rank0/Domain/Supergroup/Phylum/Class/Order/Family/Genus/Species/OTU, data = taxa, collapse = TRUE)
+  # tree_out <- tax_table_to_phylo(~Rank0/Domain/Supergroup/Phylum/Class/Order/Family/Genus/Species/OTU, data = taxa, collapse = TRUE)
+  tree_out <- tax_table_to_phylo(as.formula(tax_long_description), data = taxa, collapse = TRUE)
   ## TO DO figure out how to provide argument in tax_table_to_phylo()
   # tree_out <- tax_table_to_phylo(noquote(long), data = taxa, collapse = TRUE)
   # tree_out <- tax_table_to_phylo(paste0("~Rank0", tax_long_description), data = taxa, collapse = TRUE)
@@ -299,7 +301,7 @@ Examples of short and long
 ```{r}
 #tax_long_description
 long <- c("~Rank0/Domain/Supergroup/Phylum/Class/Order/Family/Genus/Species/OTU")
-
+as.formula(long)
 #tax_short_description
 short <- c("d", "s", "p", "c", "o", "f", "g", "s")
 ```
@@ -311,6 +313,8 @@ trac_mcr <- make_trac_input(mcr_temp_keep, TEMP, short, long)
 ```
 
 Check
+
+
 ```{r}
 # trac_mcr$y # incorrect output?!?!
 y <- as.factor(sample_data(mcr_temp_keep)$TEMP)
